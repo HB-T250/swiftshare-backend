@@ -9,6 +9,7 @@ const archiver = require("archiver");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const BASE_URL = process.ene.BASE_URL || "https://swiftshare-backend-jxag.onrender.com";
 
 const DATA_FILE = path.join(__dirname, "fileGroups.json");
 
@@ -157,14 +158,14 @@ app.post(
             fileGroupMap[groupID] = uploadedFilenames;
             saveFileGroupMap(fileGroupMap); // <--- ADDED PERSISTENCE STEP
 
-            downloadLink = `http://localhost:${PORT}/download-group/${groupID}`;
+            downloadLink = `${BASE_URL}/download-group/${groupID}`;
             console.log(
                 `[UPLOAD] New Group (${groupID}) of ${fileCount} files uploaded.`
             );
         } else {
             // --- SINGLE FILE: Generate a direct download link ---
             const singleFilename = req.files[0].filename;
-            downloadLink = `http://localhost:${PORT}/download-file/${singleFilename}`;
+            downloadLink = `${BASE_URL}/download-file/${singleFilename}`;
         }
 
         // Generate QR Code for the single resulting link
@@ -253,7 +254,7 @@ app.get("/group-info/:groupId", (req, res) => {
         type: "group",
         groupId: groupId,
         files: fileInfo,
-        download_link: `http://localhost:${PORT}/download-group/${groupId}`,
+        download_link: `${BASE_URL}/download-group/${groupId}`,
     });
 });
 
@@ -335,5 +336,6 @@ setInterval(cleanupExpiredFiles, CLEANUP_INTERVAL_MS);
 
 // Start server
 app.listen(PORT, () =>
-    console.log(`Server running on http://localhost:${PORT}`)
+    console.log(`Server running on ${BASE_URL}`)
+
 );
