@@ -261,82 +261,39 @@ app.get("/group-info/:groupId", (req, res) => {
 // ===================================
 // 🧹 AUTOMATIC CLEANUP IMPLEMENTATION
 // ===================================
+// 🧹 Automatic cleanup of old files (Snapdrop-style)
+const FILE_EXPIRY_HOURS = 24; // how long files stay alive
+const CLEANUP_INTERVAL_MINUTES = 60; // how often to check
 
-const FILE_EXPIRY_MS = 24 * 60 * 60 * 1000;
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+function cleanupOldFiles() {
+  console.log("🧹 Running cleanup check...");
+  const now = Date.now();
 
-function cleanupExpiredFiles() {
-    console.log(`\n[CLEANUP] Starting file scan...`);
-    fs.readdir(uploadFolder, (err, files) => {
-        if (err) {
-            console.error("❌ [CLEANUP] Error reading uploads directory:", err);
-            return;
+  fs.readdir(uploadDir, (err, files) => {
+    if (err) return console.error("Cleanup error:", err);
+
+    files.forEach((file) => {
+      const filePath = path.join(uploadDir, file);
+      fs.stat(filePath, (err, stats) => {
+        if (err) return;
+        const ageHours = (now - stats.mtimeMs) / (1000 * 60 * 60);
+        if (ageHours > FILE_EXPIRY_HOURS) {
+          fs.unlink(filePath, (err) => {
+            if (!err) console.log(`🗑️ Deleted expired file: ${file}`);
+          });
         }
-
-        const now = Date.now();
-        files.forEach((filename) => {
-            const filePath = path.join(uploadFolder, filename);
-            fs.stat(filePath, (err, stats) => {
-                if (err) return;
-                const fileAgeMs = now - stats.mtimeMs;
-                if (fileAgeMs > FILE_EXPIRY_MS) {
-                    fs.unlink(filePath, (unlinkErr) => {
-                        if (unlinkErr) {
-                            console.error(`[CLEANUP] Error deleting ${filename}:`, unlinkErr);
-                        } else {
-                            cleanupGroupMapEntry(filename);
-                            console.log(`[CLEANUP] Deleted expired file: ${filename}`);
-                        }
-                    });
-                }
-            });
-        });
+      });
     });
+  });
 }
 
-function cleanupGroupMapEntry(deletedFilename) {
-    // Flag to check if the map was modified
-    let modified = false;
-
-    // Iterate over a copy of keys in case we delete properties
-    for (const groupId in fileGroupMap) {
-        let fileList = fileGroupMap[groupId];
-        const initialLength = fileList.length;
-
-        // Filter out the deleted file
-        fileGroupMap[groupId] = fileList.filter((name) => name !== deletedFilename);
-
-        if (fileGroupMap[groupId].length < initialLength) {
-            modified = true;
-            if (fileGroupMap[groupId].length === 0) {
-                // If the group is empty, delete the group ID entry entirely
-                delete fileGroupMap[groupId];
-                console.log(
-                    `[CLEANUP] Group ID ${groupId} removed from map (last file deleted).`
-                );
-            }
-        }
-    }
-
-    // 🆕 Save the map only if an entry was removed or modified
-    if (modified) {
-        saveFileGroupMap(fileGroupMap); // <--- ADDED PERSISTENCE STEP
-    }
-}
-// ==========================
-// 🏠 Test Route
-// ==========================
-app.get("/", (req, res) => {
-    res.send("<h2>SwiftShare Node.js Server Running 🚀</h2>");
-});
-
-// Start the cleanup process immediately and then schedule it to run periodically
-cleanupExpiredFiles();
-setInterval(cleanupExpiredFiles, CLEANUP_INTERVAL_MS);
+// Run cleanup every hour
+setInterval(cleanupOldFiles, CLEANUP_INTERVAL_MINUTES * 60 * 1000);
 
 // Start server
 app.listen(PORT, () =>
     console.log(`Server running on ${BASE_URL}`)
 
 );
+
 
