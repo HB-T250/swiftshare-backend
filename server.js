@@ -9,7 +9,7 @@ const archiver = require("archiver");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const BASE_URL = process.ene.BASE_URL || "https://swiftshare-backend-jxag.onrender.com";
+const BASE_URL = process.env.BASE_URL || "https://swiftshare-backend-jxag.onrender.com";
 
 const DATA_FILE = path.join(__dirname, "fileGroups.json");
 
@@ -339,3 +339,4 @@ app.listen(PORT, () =>
     console.log(`Server running on ${BASE_URL}`)
 
 );
+
