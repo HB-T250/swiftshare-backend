@@ -1,0 +1,339 @@
+// Import packages
+const express = require("express");
+const multer = require("multer");
+const cors = require("cors");
+const QRCode = require("qrcode");
+const path = require("path");
+const fs = require("fs");
+const archiver = require("archiver");
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+const DATA_FILE = path.join(__dirname, "fileGroups.json");
+
+// ==========================
+// 🚨 CORS FIX & Middleware
+// ==========================
+app.use(
+    cors({
+        origin: "*",
+        methods: ["POST", "GET"],
+    })
+);
+
+app.use(express.json());
+
+app.use(express.urlencoded({ extended: true, limit: "500mb" }));
+
+// Create uploads folder if not exists
+const uploadFolder = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadFolder)) {
+    fs.mkdirSync(uploadFolder);
+}
+
+function loadFileGroupMap() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const data = fs.readFileSync(DATA_FILE, "utf8");
+            // Return parsed data or an empty object if file is empty
+            return JSON.parse(data || "{}");
+        }
+    } catch (error) {
+        console.error("❌ Error loading file group map:", error.message);
+    }
+    // Return empty map if file doesn't exist or on error
+    return {};
+}
+
+/**
+ * Writes the current file group map to the JSON file.
+ * @param {Object} map - The map to save.
+ */
+function saveFileGroupMap(map) {
+    try {
+        // Use 2 spaces for readable JSON formatting
+        fs.writeFileSync(DATA_FILE, JSON.stringify(map, null, 2), "utf8");
+    } catch (error) {
+        console.error("❌ Error saving file group map:", error.message);
+    }
+}
+
+// 🆕 Load map into memory on server start
+let fileGroupMap = loadFileGroupMap();
+
+// ===================================
+// 💾 MULTER CONFIGURATION AND LIMITS
+// ===================================
+
+// Define Limits
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 5 MB limit per file
+const MAX_FILE_COUNT = 4; // 2 files limit
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, uploadFolder);
+    },
+    filename: (req, file, cb) => {
+        // Filename format: [uniqueID]-[originalname]
+        const uniqueName =
+            Date.now().toString(36) +
+            Math.random().toString(36).substring(2, 5) +
+            "-" +
+            file.originalname;
+        cb(null, uniqueName);
+    },
+});
+
+// Configure Multer with limits
+const upload = multer({
+    storage: storage,
+    limits: {
+        fileSize: MAX_FILE_SIZE, // Apply file size limit
+        files: MAX_FILE_COUNT, // Apply max file count limit
+    },
+});
+
+// =========================================
+// 📤 Robust Upload Route with Error Handling
+// =========================================
+app.post(
+    "/upload",
+    (req, res, next) => {
+        // 1. Run Multer middleware (handling array of files, limits applied via config)
+        upload.array("files")(req, res, async function(err) {
+            // 🚨 Multer Error Handling
+            if (err instanceof multer.MulterError) {
+                console.error("🚨 Multer Error:", err.code);
+                let message = "A file upload error occurred.";
+
+                if (err.code === "LIMIT_FILE_SIZE") {
+                    message = `File too large. Maximum size is ${
+            MAX_FILE_SIZE / (1024 * 1024)
+          }MB.`;
+                } else if (
+                    err.code === "LIMIT_UNEXPECTED_FILE" ||
+                    err.code === "LIMIT_FILE_COUNT"
+                ) {
+                    message = `Too many files selected. Maximum is ${MAX_FILE_COUNT}.`;
+                }
+
+                // Return a 400 Bad Request for client-side errors (limits)
+                return res.status(400).json({
+                    error: message,
+                    code: err.code,
+                });
+            }
+
+            // 🚨 General Server Error Handling
+            if (err) {
+                console.error("🚨 General Upload Error:", err);
+                return res
+                    .status(500)
+                    .json({ error: "An unknown server error occurred during upload." });
+            }
+
+            // If no error, continue to the next middleware (main route logic)
+            next();
+        });
+    },
+    async(req, res) => {
+        // 2. Main route logic (executed only if Multer succeeded)
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ error: "No files uploaded" });
+        }
+
+        const fileCount = req.files.length;
+        let downloadLink;
+
+        if (fileCount > 1) {
+            // --- MULTIPLE FILES: Generate a single ZIP link ---
+            const uploadedFilenames = req.files.map((f) => f.filename);
+            // GroupID is the unique timestamp from the first file's filename
+            const groupID = uploadedFilenames[0].split("-")[0];
+
+            // 💾 Update in-memory map AND save it to file (MODIFIED)
+            fileGroupMap[groupID] = uploadedFilenames;
+            saveFileGroupMap(fileGroupMap); // <--- ADDED PERSISTENCE STEP
+
+            downloadLink = `http://localhost:${PORT}/download-group/${groupID}`;
+            console.log(
+                `[UPLOAD] New Group (${groupID}) of ${fileCount} files uploaded.`
+            );
+        } else {
+            // --- SINGLE FILE: Generate a direct download link ---
+            const singleFilename = req.files[0].filename;
+            downloadLink = `http://localhost:${PORT}/download-file/${singleFilename}`;
+        }
+
+        // Generate QR Code for the single resulting link
+        const qrCode = await QRCode.toDataURL(downloadLink);
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+
+        res.json({
+            message: "File(s) processed successfully",
+            file_count: fileCount,
+            download_link: downloadLink,
+            qr_code: qrCode,
+            uploaded_files: req.files.map((f) => f.originalname),
+        });
+    }
+);
+
+// ==========================
+// 📥 Download Single File Route
+// ==========================
+app.get("/download-file/:filename", (req, res) => {
+    const filePath = path.join(uploadFolder, req.params.filename);
+    if (fs.existsSync(filePath)) {
+        // Extract original name from the server filename for the download header
+        const originalName = req.params.filename.split("-").slice(1).join("-");
+        res.download(filePath, originalName);
+    } else {
+        res.status(404).json({ error: "File not found" });
+    }
+});
+
+// ==========================
+// 📦 Download Group Route (The ZIP mechanism)
+// ==========================
+app.get("/download-group/:groupId", (req, res) => {
+    const groupId = req.params.groupId;
+    const filesToZip = fileGroupMap[groupId];
+
+    if (!filesToZip || filesToZip.length === 0) {
+        return res.status(404).send("File group not found or empty.");
+    }
+
+    res.set({
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="SwiftShare_Files_${groupId}.zip"`,
+    });
+
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    archive.on("warning", (err) => console.warn("Archiver warning:", err));
+    archive.on("error", (err) => {
+        res.status(500).send({ error: err.message });
+    });
+    archive.pipe(res);
+
+    filesToZip.forEach((serverFilename) => {
+        const filePath = path.join(uploadFolder, serverFilename);
+        const originalName = serverFilename.split("-").slice(1).join("-");
+
+        if (fs.existsSync(filePath)) {
+            archive.file(filePath, { name: originalName });
+        } else {
+            console.warn(`File not found on server: ${filePath}`);
+        }
+    });
+
+    archive.finalize();
+});
+
+// ==========================
+// 🔍 Group Info Route (for receiver page)
+// ==========================
+app.get("/group-info/:groupId", (req, res) => {
+    const groupId = req.params.groupId;
+    const filesInGroup = fileGroupMap[groupId];
+
+    if (!filesInGroup || filesInGroup.length === 0) {
+        return res.status(404).json({ error: "File group not found" });
+    }
+
+    const fileInfo = filesInGroup.map((serverFilename) => {
+        const originalName = serverFilename.split("-").slice(1).join("-");
+        return { name: originalName };
+    });
+
+    res.json({
+        type: "group",
+        groupId: groupId,
+        files: fileInfo,
+        download_link: `http://localhost:${PORT}/download-group/${groupId}`,
+    });
+});
+
+// ===================================
+// 🧹 AUTOMATIC CLEANUP IMPLEMENTATION
+// ===================================
+
+const FILE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+
+function cleanupExpiredFiles() {
+    console.log(`\n[CLEANUP] Starting file scan...`);
+    fs.readdir(uploadFolder, (err, files) => {
+        if (err) {
+            console.error("❌ [CLEANUP] Error reading uploads directory:", err);
+            return;
+        }
+
+        const now = Date.now();
+        files.forEach((filename) => {
+            const filePath = path.join(uploadFolder, filename);
+            fs.stat(filePath, (err, stats) => {
+                if (err) return;
+                const fileAgeMs = now - stats.mtimeMs;
+                if (fileAgeMs > FILE_EXPIRY_MS) {
+                    fs.unlink(filePath, (unlinkErr) => {
+                        if (unlinkErr) {
+                            console.error(`[CLEANUP] Error deleting ${filename}:`, unlinkErr);
+                        } else {
+                            cleanupGroupMapEntry(filename);
+                            console.log(`[CLEANUP] Deleted expired file: ${filename}`);
+                        }
+                    });
+                }
+            });
+        });
+    });
+}
+
+function cleanupGroupMapEntry(deletedFilename) {
+    // Flag to check if the map was modified
+    let modified = false;
+
+    // Iterate over a copy of keys in case we delete properties
+    for (const groupId in fileGroupMap) {
+        let fileList = fileGroupMap[groupId];
+        const initialLength = fileList.length;
+
+        // Filter out the deleted file
+        fileGroupMap[groupId] = fileList.filter((name) => name !== deletedFilename);
+
+        if (fileGroupMap[groupId].length < initialLength) {
+            modified = true;
+            if (fileGroupMap[groupId].length === 0) {
+                // If the group is empty, delete the group ID entry entirely
+                delete fileGroupMap[groupId];
+                console.log(
+                    `[CLEANUP] Group ID ${groupId} removed from map (last file deleted).`
+                );
+            }
+        }
+    }
+
+    // 🆕 Save the map only if an entry was removed or modified
+    if (modified) {
+        saveFileGroupMap(fileGroupMap); // <--- ADDED PERSISTENCE STEP
+    }
+}
+// ==========================
+// 🏠 Test Route
+// ==========================
+app.get("/", (req, res) => {
+    res.send("<h2>SwiftShare Node.js Server Running 🚀</h2>");
+});
+
+// Start the cleanup process immediately and then schedule it to run periodically
+cleanupExpiredFiles();
+setInterval(cleanupExpiredFiles, CLEANUP_INTERVAL_MS);
+
+// Start server
+app.listen(PORT, () =>
+    console.log(`Server running on http://localhost:${PORT}`)
+);
