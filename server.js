@@ -290,10 +290,15 @@ function cleanupOldFiles() {
 // Run cleanup every hour
 setInterval(cleanupOldFiles, CLEANUP_INTERVAL_MINUTES * 60 * 1000);
 
+app.get("/", (req, res) => {
+    res.send("🚀 SwiftShare Backend Running!");
+});
+
 // Start server
 app.listen(PORT, () =>
     console.log(`Server running on ${BASE_URL}`)
 
 );
+
 
 
